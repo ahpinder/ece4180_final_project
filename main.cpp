@@ -30,21 +30,58 @@ inline uint32_t milliseconds() {
     return (uint32_t)((std::chrono::time_point_cast<std::chrono::milliseconds>(Kernel::Clock::now())).time_since_epoch().count());
 }
 
-float s1_p = 2.f/90.f;
+
+int period = 30;
+
+volatile int current_distance = 12;
+
+volatile uint32_t starttime = 0;
+volatile uint32_t endtime = 0;
+volatile uint32_t sonarstarttime = 0;
+
+float s1_p = 2.f*((float)period/20.f)/90.f;
 float s1_d = 0.01f/90.f;
-float s1_i = 0.07f/90.f;
+float s1_i = 0.07f*((float)period/20.f)/90.f;
 float s1_integrator = 0.f;
 float lastpitch = 0;
-float s2_p = 2.f/90.f;
+float s2_p = 2.f*((float)period/20.f)/90.f;
 float s2_d = 0.01f/90.f;
-float s2_i = 0.02f/90.f;
+float s2_i = 0.02f*((float)period/20.f)/90.f;
 float s2_integrator = 0.f;
 float lastroll = 0;
 
 uLCD lcd(p28, p27, p13, uLCD::BAUD_115200);
 
-int pitchtrim = 0, rolltrim = 0;
+DigitalOut trig(p17);
+InterruptIn echo(p16);
 
+Thread sonarthread;
+
+float pitchtrim = 0, rolltrim = 0, triminc = 0.3;
+
+void uptransition() {
+    starttime = us_ticker_read();
+}
+
+void downtransition() {
+    endtime = us_ticker_read();
+    current_distance = (endtime - starttime) / 148;
+}
+
+void sonar_management() {
+    echo.rise(&uptransition);
+    echo.fall(&downtransition);
+    while(1) {
+        endtime = 0;
+        sonarstarttime = milliseconds();
+        trig = 1;
+        wait_us(7);
+        trig = 0;
+        while(endtime == 0 && milliseconds() - sonarstarttime < 500) {
+            ThisThread::sleep_for(50);
+        }
+    }
+}
 
 int main()
 {
@@ -72,37 +109,54 @@ int main()
     s2.calibrate(0.001, 90);
     s1 = 1;
     s2 = 0.5;
+    sonarthread.start(sonar_management);
     uint32_t before = milliseconds();
     while (true) {
         icm.getAccGyro();
         mg.updateIMU(icm.getGX(), icm.getGY(), icm.getGZ(), icm.getAX(), icm.getAY(), icm.getAZ());
         //printf("%x\r\n",icm.whoAmI());
         //printf("pitch: %d. roll: %d\r\n",(int)mg.getPitch(),(int)mg.getRoll());
-        s1 = (s1 * 0.9) + ((-s1_p * mg.getPitch()) + (-s1_d * (mg.getPitch() - lastpitch)) + (-s1_i * s1_integrator) + 0.5) * 0.1;
-        s2 = (s2 * 0.9) + ((-s2_p * mg.getRoll()) + (-s2_d * (mg.getRoll() - lastroll)) + (-s2_i * s2_integrator) + 0.5) * 0.1;
-        printf("p: %d.ival: %d\r\n",(int)(mg.getPitch()),(int)(s1_integrator));
+        float pitcherror = mg.getPitch() - pitchtrim;
+        float rollerror = mg.getRoll() - rolltrim;
+        if (current_distance >= 4) {
+            s1 = (s1 * 0.9) + ((-s1_p * pitcherror) + (-s1_d * (pitcherror - lastpitch)) + (-s1_i * s1_integrator) + 0.5) * 0.1;
+            s2 = (s2 * 0.9) + ((-s2_p * rollerror) + (-s2_d * (rollerror - lastroll)) + (-s2_i * s2_integrator) + 0.5) * 0.1;
+            s1_integrator += pitcherror;
+            s2_integrator += rollerror;
+        }
+        else {
+            s2 = (s2 >= 1) ? 1 : s2 + 0.03;
+        }
+        //printf("p: %d.ival: %d\r\n",(int)(mg.getPitch()),(int)(s1_integrator));
         //printf("ax: %d. ay: %d. az: %d. gx: %d. gy: %d. gz: %d.\r\n", (int)(icm.getAX() * 100), (int)(icm.getAY() * 100), (int)(icm.getAZ() * 100), (int)(icm.getGX()), (int)(icm.getGY()), (int)(icm.getGZ()));
         led = !led;
         //s1 = 1 - s1;
-        while(milliseconds() < before + 20);
-        before += 20;
-        lastpitch = mg.getPitch();
-        s1_integrator += lastpitch;
-        lastroll = mg.getRoll();
-        s2_integrator += lastroll;
-        if (!up) {
-            pitchtrim += 1;
+        while(milliseconds() < before + period);
+        before = milliseconds();
+        lastpitch = pitcherror;
+        lastroll = rollerror;
+        if (!left) {
+            pitchtrim += triminc;
         }
-        else if (!down) {
-            pitchtrim -= 1;
+        else if (!right) {
+            pitchtrim -= triminc;
         }
-        if (!right) {
-            rolltrim += 1;
+        if (!down) {
+            rolltrim -= triminc;
         }
-        else if (!left) {
-            rolltrim -= 1;
+        else if (!up) {
+            rolltrim += triminc;
         }
-        
+        if (rolltrim > 45)
+            rolltrim = 45;
+        if (rolltrim < -45)
+            rolltrim = -45;
+        if (pitchtrim > 45)
+            pitchtrim = 45;
+        if (pitchtrim < -45)
+            pitchtrim = -45;
+        lcd.locate(0, 0);
+        lcd.printf("trim: %d,%d    \r\nposition:%d,%d    ",(int)rolltrim,(int)pitchtrim,(int)lastroll,(int)lastpitch);
         //s1_integrator = (s1_integrator * s1_i > 1) ? 1/s1_i : s1_integrator;
         //s1_integrator = (s1_integrator * s1_i < -1) ? -1/s1_i : s1_integrator;
     }
