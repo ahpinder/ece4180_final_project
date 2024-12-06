@@ -1,7 +1,3 @@
-/* mbed Microcontroller Library
- * Copyright (c) 2019 ARM Limited
- * SPDX-License-Identifier: Apache-2.0
- */
 
 #include "mbed.h"
 #include "Servo.h"
@@ -90,14 +86,19 @@ void downtransition() {
 
 // this thread manages the HC-SR04 module
 void sonar_management() {
+    // set up ISRs for HC-SR04 outptut pin (echo)
     echo.rise(&uptransition);
     echo.fall(&downtransition);
     while(1) {
+        // set endtime to 0 so when it goes nonzero, we know it saw something
         endtime = 0;
+        // set start time for later timeout check
         sonarstarttime = milliseconds();
+        // send pulse
         trig = 1;
         wait_us(7);
         trig = 0;
+        // wait for pulse back from HC-SR04 or timeout interval
         while(endtime == 0 && milliseconds() - sonarstarttime < 500) {
             ThisThread::sleep_for(50);
         }
